@@ -1,4 +1,4 @@
-from .advanced_image_loader import (
+from .I9_batch_processing import (
     NODE_CLASS_MAPPINGS,
     NODE_DISPLAY_NAME_MAPPINGS,
 )
