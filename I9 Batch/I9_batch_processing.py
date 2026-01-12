@@ -1,8 +1,3 @@
-"""
-ComfyUI I9 - Batch Processing
-Modern batch image loading with instant preview, reordering, and per-image repeat control.
-"""
-
 import torch
 import numpy as np
 from PIL import Image
@@ -14,10 +9,6 @@ import folder_paths
 import comfy.utils
 
 class I9_BatchProcessing:
-    """
-    An advanced, interactive multi-image batch processor that receives its state
-    from a custom frontend widget.
-    """
 
     def __init__(self):
         self.node_states = {}
