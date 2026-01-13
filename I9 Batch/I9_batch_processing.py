@@ -7,6 +7,132 @@ import uuid
 import hashlib
 import folder_paths
 import comfy.utils
+import server
+from aiohttp import web
+import shutil
+
+# API Routes for batch management
+@server.PromptServer.instance.routes.post("/i9/batch/upload")
+async def upload_batch_images(request):
+    """Handle multiple image uploads"""
+    try:
+        reader = await request.multipart()
+        uploaded_files = []
+        
+        input_dir = folder_paths.get_input_directory()
+        pool_dir = os.path.join(input_dir, "I9_ImagePool")
+        os.makedirs(pool_dir, exist_ok=True)
+        
+        field = await reader.next()
+        while field is not None:
+            if field.name == 'image':
+                filename = field.filename
+                # Generate unique filename if exists
+                base, ext = os.path.splitext(filename)
+                counter = 1
+                final_filename = filename
+                while os.path.exists(os.path.join(pool_dir, final_filename)):
+                    final_filename = f"{base}_{counter}{ext}"
+                    counter += 1
+                
+                filepath = os.path.join(pool_dir, final_filename)
+                
+                with open(filepath, 'wb') as f:
+                    while True:
+                        chunk = await field.read_chunk()
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                
+                uploaded_files.append({
+                    'filename': final_filename,
+                    'original_name': filename,
+                    'path': filepath
+                })
+            
+            field = await reader.next()
+        
+        return web.json_response({
+            'success': True,
+            'files': uploaded_files
+        })
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+@server.PromptServer.instance.routes.get("/i9/batch/list")
+async def list_batch_images(request):
+    """List all images in the batch pool"""
+    try:
+        input_dir = folder_paths.get_input_directory()
+        pool_dir = os.path.join(input_dir, "I9_ImagePool")
+        os.makedirs(pool_dir, exist_ok=True)
+        
+        images = []
+        for filename in os.listdir(pool_dir):
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')):
+                filepath = os.path.join(pool_dir, filename)
+                stat = os.stat(filepath)
+                images.append({
+                    'filename': filename,
+                    'size': stat.st_size,
+                    'modified': stat.st_mtime
+                })
+        
+        # Sort by modification time (newest first)
+        images.sort(key=lambda x: x['modified'], reverse=True)
+        
+        return web.json_response({
+            'success': True,
+            'images': images
+        })
+    except Exception as e:
+        return web.json_response({
+            'success': False,
+            'error': str(e)
+        }, status=500)
+
+@server.PromptServer.instance.routes.delete("/i9/batch/delete")
+async def delete_batch_image(request):
+    """Delete an image from the batch pool"""
+    try:
+        data = await request.json()
+        filename = data.get('filename')
+        
+        if not filename:
+            return web.json_response({'success': False, 'error': 'No filename provided'}, status=400)
+        
+        input_dir = folder_paths.get_input_directory()
+        pool_dir = os.path.join(input_dir, "I9_ImagePool")
+        filepath = os.path.join(pool_dir, filename)
+        
+        if os.path.exists(filepath):
+            os.remove(filepath)
+            return web.json_response({'success': True})
+        else:
+            return web.json_response({'success': False, 'error': 'File not found'}, status=404)
+    except Exception as e:
+        return web.json_response({'success': False, 'error': str(e)}, status=500)
+
+@server.PromptServer.instance.routes.post("/i9/batch/clear")
+async def clear_batch_pool(request):
+    """Clear all images from the batch pool"""
+    try:
+        input_dir = folder_paths.get_input_directory()
+        pool_dir = os.path.join(input_dir, "I9_ImagePool")
+        
+        if os.path.exists(pool_dir):
+            for filename in os.listdir(pool_dir):
+                filepath = os.path.join(pool_dir, filename)
+                if os.path.isfile(filepath):
+                    os.remove(filepath)
+        
+        return web.json_response({'success': True})
+    except Exception as e:
+        return web.json_response({'success': False, 'error': str(e)}, status=500)
+
 
 class I9_BatchProcessing:
 
@@ -15,12 +141,8 @@ class I9_BatchProcessing:
 
     @classmethod
     def INPUT_TYPES(cls):
-        input_dir = folder_paths.get_input_directory()
-        files = [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
-        
         return {
             "required": {
-                "image": (sorted(files), {"image_upload": True}),
                 "mode": (["Batch Tensor", "Sequential"], {"default": "Batch Tensor"}),
             },
             "optional": {
@@ -33,7 +155,6 @@ class I9_BatchProcessing:
             },
             "hidden": {
                 "node_id": "UNIQUE_ID",
-                "batch_data": ("STRING", {"default": "{}"}),
             }
         }
 
@@ -42,140 +163,95 @@ class I9_BatchProcessing:
     FUNCTION = "load_batch"
     CATEGORY = "I9/Input"
 
-    def load_batch(self, image, mode="Batch Tensor", resize_mode="Center Crop", batch_index=0, width=512, height=512, aspect_label="1:1", enable_img2img=True, node_id=None, batch_data="{}"):
+    def load_batch(self, mode="Batch Tensor", resize_mode="Center Crop", batch_index=0, width=512, height=512, aspect_label="1:1", enable_img2img=True, node_id=None):
         print(f"\n{'='*60}")
         print(f"[I9 Batch Processing] Mode: {mode} | Resize: {resize_mode} | Index: {batch_index}")
         print(f"[I9 Batch Processing] Enable img2img: {enable_img2img} | Resolution: {width}x{height} | Aspect: {aspect_label}")
-        print(f"[I9 Batch Processing] Image param: {image}")
+        print(f"[I9 Batch Processing] Loading batch for node: {node_id}")
 
-        try:
-            data = json.loads(batch_data) if batch_data else {}
-        except json.JSONDecodeError:
-            print("[I9 Batch Processing] Invalid batch_data JSON, using empty.")
-            data = {}
-
-        # Initialize batch data structure
-        if 'images' not in data:
-            data['images'] = []
-        if 'order' not in data:
-            data['order'] = []
-
-        # Add uploaded image to batch if not already present
-        if image:
-            image_exists = any(img['filename'] == image for img in data['images'])
-            if not image_exists:
-                image_id = f"img_{uuid.uuid4().hex[:16]}"
-                data['images'].append({
-                    'id': image_id,
-                    'filename': image,
-                    'original_name': image,
-                    'repeat_count': 1
-                })
-                data['order'].append(image_id)
-                print(f"[I9 Batch Processing] Added new image to batch: {image}")
-
-        # txt2img mode: Generate empty latents
-        if not enable_img2img:
-            return self._load_txt2img(data, mode, batch_index, width, height, aspect_label, node_id)
-
-        # img2img mode: Load actual images
-        images_meta = data.get('images', [])
-        order = data.get('order', [])
-
-        if not images_meta or not order:
-            print("[I9 Batch Processing] No images in batch, returning empty.")
+        # Get all images from pool
+        input_dir = folder_paths.get_input_directory()
+        pool_dir = os.path.join(input_dir, "I9_ImagePool")
+        
+        if not os.path.exists(pool_dir):
             empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
-            return (empty, 0, 0, "No images loaded. Upload an image using the 'choose file to upload' button.")
+            return (empty, 0, 0, "No images in batch pool. Use the upload button to add images.")
 
-        total_count = sum(img.get('repeat_count', 1) for img in images_meta)
+        # Get all image files
+        image_files = sorted([f for f in os.listdir(pool_dir) 
+                            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'))])
+        
+        if not image_files:
+            empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            return (empty, 0, 0, "No images in batch pool. Use the upload button to add images.")
 
+        # txt2img mode
+        if not enable_img2img:
+            empty = torch.zeros((1, height, width, 3), dtype=torch.float32)
+            return (empty, 0, len(image_files), f"txt2img mode - {len(image_files)} images in pool")
+
+        # img2img mode - load images
         if mode == "Sequential":
-            state_key = f"{node_id}_{hashlib.md5(batch_data.encode()).hexdigest()[:8]}"
-            if state_key in self.node_states and self.node_states[state_key]['last_widget_index'] != batch_index:
-                self.node_states[state_key] = {'current_index': batch_index, 'last_widget_index': batch_index}
-            elif state_key not in self.node_states:
-                self.node_states[state_key] = {'current_index': batch_index, 'last_widget_index': batch_index}
-
-            current_index = self.node_states[state_key]['current_index']
-            img_tensor, _, total, info = self._load_sequential(images_meta, order, current_index, total_count, node_id)
-            next_index = (current_index + 1) % total_count
-            self.node_states[state_key]['current_index'] = next_index
-            self.node_states[state_key]['last_widget_index'] = batch_index
-            
-            return (img_tensor, current_index, total, info)
+            return self._load_sequential_from_pool(pool_dir, image_files, batch_index, resize_mode, width, height, node_id)
         else:
-            return self._load_batch_tensor(images_meta, order, resize_mode, total_count, width, height, node_id)
+            return self._load_batch_from_pool(pool_dir, image_files, resize_mode, width, height)
 
-    def _load_sequential(self, images_meta, order, batch_index, total_count, node_id=None):
-        flat_list = []
-        for img_id in order:
-            img_meta = next((img for img in images_meta if img['id'] == img_id), None)
-            if not img_meta: continue
-            for i in range(img_meta.get('repeat_count', 1)):
-                flat_list.append((img_meta, i + 1, img_meta.get('repeat_count', 1)))
-
-        if batch_index >= len(flat_list):
+    def _load_sequential_from_pool(self, pool_dir, image_files, batch_index, resize_mode, width, height, node_id):
+        """Load one image at a time in sequential mode"""
+        total_count = len(image_files)
+        
+        if batch_index >= total_count:
             empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
             return (empty, batch_index, total_count, "Index out of range")
 
-        img_meta, copy_num, repeat_count = flat_list[batch_index]
-        filename, original_name = img_meta['filename'], img_meta.get('original_name', img_meta['filename'])
-
-        # Use smart path finder that checks multiple locations
-        img_path = self._find_image_path(filename, node_id)
-        if not img_path:
-            empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
-            return (empty, batch_index, total_count, f"Image not found: {filename}")
+        filename = image_files[batch_index]
+        img_path = os.path.join(pool_dir, filename)
 
         try:
             img = Image.open(img_path).convert('RGB')
-            img_array = np.array(img).astype(np.float32) / 255.0
-            img_tensor = torch.from_numpy(img_array).unsqueeze(0)
-            info = f"[{batch_index}/{total_count}] {original_name} (copy {copy_num}/{repeat_count})"
+            img_tensor = torch.from_numpy(np.array(img).astype(np.float32) / 255.0)
+            
+            # Resize if needed
+            if img_tensor.shape[0] != height or img_tensor.shape[1] != width:
+                img_tensor = self._resize_image(img_tensor, width, height, resize_mode)
+            
+            img_tensor = img_tensor.unsqueeze(0)
+            info = f"[{batch_index + 1}/{total_count}] {filename}"
             return (img_tensor, batch_index, total_count, info)
         except Exception as e:
             empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
-            return (empty, batch_index, total_count, f"Error: {e}")
+            return (empty, batch_index, total_count, f"Error loading {filename}: {e}")
 
-    def _load_batch_tensor(self, images_meta, order, resize_mode, total_count, target_width, target_height, node_id=None):
-        """
-        Load batch tensor with ALL images resized to target_width x target_height from aspect ratio selector.
-        """
-        loaded_images, info_lines = [], []
-        print(f"[I9 Batch Processing] Batch Tensor Mode - Target dimensions: {target_width}x{target_height}")
+    def _load_batch_from_pool(self, pool_dir, image_files, resize_mode, target_width, target_height):
+        """Load all images as a batch tensor"""
+        loaded_images = []
+        info_lines = []
+        
+        print(f"[I9 Batch Processing] Loading {len(image_files)} images as batch tensor")
 
-        for img_id in order:
-            img_meta = next((img for img in images_meta if img['id'] == img_id), None)
-            if not img_meta: continue
-
-            filename, repeat_count, original_name = img_meta['filename'], img_meta.get('repeat_count', 1), img_meta.get('original_name', img_meta['filename'])
-
-            # Use smart path finder that checks multiple locations
-            img_path = self._find_image_path(filename, node_id)
-            if not img_path:
-                print(f"[I9 Batch Processing] Image not found: {filename}")
-                continue
-
+        for filename in image_files:
+            img_path = os.path.join(pool_dir, filename)
+            
             try:
                 img = Image.open(img_path).convert('RGB')
                 img_tensor = torch.from_numpy(np.array(img).astype(np.float32) / 255.0)
 
-                # Always resize to target dimensions (from aspect ratio selector)
+                # Resize to target dimensions
                 if img_tensor.shape[0] != target_height or img_tensor.shape[1] != target_width:
                     img_tensor = self._resize_image(img_tensor, target_width, target_height, resize_mode)
-                    print(f"[I9 Batch Processing] Resized {original_name} from {img.size[0]}x{img.size[1]} → {target_width}x{target_height} ({resize_mode})")
-                for i in range(repeat_count):
-                    loaded_images.append(img_tensor)
-                    info_lines.append(f"{original_name} (copy {i+1}/{repeat_count})")
+                
+                loaded_images.append(img_tensor)
+                info_lines.append(filename)
             except Exception as e:
                 print(f"[I9 Batch Processing] Error loading {filename}: {e}")
                 continue
 
         if not loaded_images:
             empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
-            return (empty, 0, total_count, "Failed to load images")
+            return (empty, 0, 0, "Failed to load any images")
 
-        return (torch.stack(loaded_images, dim=0), 0, total_count, "\n".join(info_lines))
+        batch_tensor = torch.stack(loaded_images, dim=0)
+        return (batch_tensor, 0, len(loaded_images), f"Loaded {len(loaded_images)} images:\n" + "\n".join(info_lines))
 
     def _resize_image(self, img_tensor, target_width, target_height, resize_mode):
         if resize_mode == "Stretch":
@@ -192,159 +268,25 @@ class I9_BatchProcessing:
             return canvas
         return img_tensor
 
-    def _load_txt2img(self, data, mode, batch_index, width, height, aspect_label, node_id):
-        """Generate empty IMAGE tensors for txt2img mode."""
-        latents_meta = data.get('latents', [])
-        order = data.get('order', [])
-
-        if not latents_meta or not order:
-            print(f"[I9 Batch Processing] No latents in batch, returning empty {aspect_label} latent.")
-            empty = torch.zeros((1, height, width, 3), dtype=torch.float32)
-            return (empty, 0, 0, f"No latents defined ({aspect_label})")
-
-        total_count = sum(latent.get('repeat_count', 1) for latent in latents_meta)
-
-        if mode == "Sequential":
-            return self._load_txt2img_sequential(latents_meta, order, batch_index, total_count, node_id, data, width, height)
-        else:
-            return self._load_txt2img_batch(latents_meta, order, total_count, width, height)
-
-    def _load_txt2img_sequential(self, latents_meta, order, batch_index, total_count, node_id, data, fallback_width, fallback_height):
-        """Sequential mode for txt2img - return one empty latent at a time"""
-        state_key = f"{node_id}_txt2img_{hashlib.md5(json.dumps(data).encode()).hexdigest()[:8]}"
-
-        if state_key in self.node_states and self.node_states[state_key]['last_widget_index'] != batch_index:
-            self.node_states[state_key] = {'current_index': batch_index, 'last_widget_index': batch_index}
-        elif state_key not in self.node_states:
-            self.node_states[state_key] = {'current_index': batch_index, 'last_widget_index': batch_index}
-
-        current_index = self.node_states[state_key]['current_index']
-
-        flat_list = []
-        for latent_id in order:
-            latent_meta = next((l for l in latents_meta if l['id'] == latent_id), None)
-            if not latent_meta:
-                continue
-            for i in range(latent_meta.get('repeat_count', 1)):
-                flat_list.append((latent_meta, i + 1, latent_meta.get('repeat_count', 1)))
-
-        if current_index >= len(flat_list):
-            empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
-            return (empty, current_index, total_count, "Index out of range")
-
-        latent_meta, copy_num, repeat_count = flat_list[current_index]
-        w, h = latent_meta.get('width', fallback_width), latent_meta.get('height', fallback_height)
-        latent_id = latent_meta.get('id', 'unknown')
-
-        if w < 64 or h < 64:
-            w, h = fallback_width, fallback_height
-
-        empty_tensor = torch.zeros((1, h, w, 3), dtype=torch.float32)
-        info = f"[{current_index}/{total_count}] Empty latent {latent_id[:8]} {w}x{h} (copy {copy_num}/{repeat_count})"
-
-        next_index = (current_index + 1) % total_count
-        self.node_states[state_key]['current_index'] = next_index
-        self.node_states[state_key]['last_widget_index'] = batch_index
-
-        return (empty_tensor, current_index, total_count, info)
-
-    def _load_txt2img_batch(self, latents_meta, order, total_count, fallback_width, fallback_height):
-        """Batch tensor mode for txt2img - return all empty latents stacked"""
-        loaded_latents = []
-        info_lines = []
-
-        for latent_id in order:
-            latent_meta = next((l for l in latents_meta if l['id'] == latent_id), None)
-            if not latent_meta:
-                continue
-
-            w, h = latent_meta.get('width', fallback_width), latent_meta.get('height', fallback_height)
-
-            if w < 64 or h < 64:
-                w, h = fallback_width, fallback_height
-            repeat_count = latent_meta.get('repeat_count', 1)
-            latent_display_id = latent_meta.get('id', 'unknown')[:8]
-
-            empty_tensor = torch.zeros((h, w, 3), dtype=torch.float32)
-
-            for i in range(repeat_count):
-                loaded_latents.append(empty_tensor)
-                info_lines.append(f"Empty latent {latent_display_id} {w}x{h} (copy {i+1}/{repeat_count})")
-
-        if not loaded_latents:
-            empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
-            return (empty, 0, total_count, "No latents to generate")
-
-        batch_tensor = torch.stack(loaded_latents, dim=0)
-        return (batch_tensor, 0, total_count, "\n".join(info_lines))
-
-    def _get_upload_dir(self, node_id=None):
-        """Get the central image pool directory"""
-        input_dir = folder_paths.get_input_directory()
-        pool_dir = os.path.join(input_dir, "I9_ImagePool")
-        os.makedirs(pool_dir, exist_ok=True)
-        return pool_dir
-
-    def _find_image_path(self, filename, node_id=None):
-        """Find an image file, checking multiple locations"""
-        import shutil
-        input_dir = folder_paths.get_input_directory()
-        
-        # Check main input directory first
-        main_path = os.path.join(input_dir, filename)
-        if os.path.exists(main_path):
-            return main_path
-        
-        pool_dir = os.path.join(input_dir, "I9_ImagePool")
-        os.makedirs(pool_dir, exist_ok=True)
-
-        # Check central pool
-        pool_path = os.path.join(pool_dir, filename)
-        if os.path.exists(pool_path):
-            return pool_path
-
-        # Check old per-node folders
-        old_base_dir = os.path.join(input_dir, "I9_BatchUploads")
-        if node_id and os.path.exists(old_base_dir):
-            old_node_dir = os.path.join(old_base_dir, str(node_id))
-            old_path = os.path.join(old_node_dir, filename)
-            if os.path.exists(old_path):
-                try:
-                    shutil.copy2(old_path, pool_path)
-                    print(f"[I9] Auto-migrated {filename} from node {node_id} folder to pool")
-                except Exception as e:
-                    print(f"[I9] Failed to migrate {filename}: {e}")
-                return old_path if not os.path.exists(pool_path) else pool_path
-
-        # Search ALL old per-node folders
-        if os.path.exists(old_base_dir):
-            for folder in os.listdir(old_base_dir):
-                folder_path = os.path.join(old_base_dir, folder)
-                if os.path.isdir(folder_path):
-                    old_path = os.path.join(folder_path, filename)
-                    if os.path.exists(old_path):
-                        try:
-                            shutil.copy2(old_path, pool_path)
-                            print(f"[I9] Auto-migrated {filename} from folder {folder} to pool")
-                        except Exception as e:
-                            print(f"[I9] Failed to migrate {filename}: {e}")
-                        return old_path if not os.path.exists(pool_path) else pool_path
-
-        return None
-
     @classmethod
-    def IS_CHANGED(cls, image, mode="Batch Tensor", batch_data="{}", **kwargs):
-        # Force re-execution when image changes
+    def IS_CHANGED(cls, **kwargs):
+        """Force update when pool contents change"""
+        input_dir = folder_paths.get_input_directory()
+        pool_dir = os.path.join(input_dir, "I9_ImagePool")
+        
+        if not os.path.exists(pool_dir):
+            return "empty"
+        
+        # Hash based on file list and modification times
+        files = sorted(os.listdir(pool_dir))
         m = hashlib.sha256()
-        m.update(image.encode('utf-8'))
-        m.update(batch_data.encode('utf-8'))
-        return m.digest().hex()
-
-    @classmethod
-    def VALIDATE_INPUTS(cls, image, **kwargs):
-        if not folder_paths.exists_annotated_filepath(image):
-            return "Invalid image file: {}".format(image)
-        return True
+        for f in files:
+            fpath = os.path.join(pool_dir, f)
+            if os.path.isfile(fpath):
+                m.update(f.encode())
+                m.update(str(os.path.getmtime(fpath)).encode())
+        
+        return m.hexdigest()
 
 NODE_CLASS_MAPPINGS = {"I9_BatchProcessing": I9_BatchProcessing}
 NODE_DISPLAY_NAME_MAPPINGS = {"I9_BatchProcessing": "🖼️ I9 Batch Processing"}
