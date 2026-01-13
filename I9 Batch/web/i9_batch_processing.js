@@ -1,292 +1,306 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-// Register the custom node extension
 app.registerExtension({
     name: "I9.BatchProcessing",
     
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData.name === "I9_BatchProcessing") {
             
-            // Store original onNodeCreated
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             
             nodeType.prototype.onNodeCreated = function() {
                 const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
                 
-                // Initialize batch data
-                if (!this.properties) {
-                    this.properties = {};
-                }
-                if (!this.properties.batch_data) {
-                    this.properties.batch_data = JSON.stringify({
-                        images: [],
-                        latents: [],
-                        order: []
-                    });
-                }
-                
-                // Add "Load Images" button
-                this.addWidget("button", "load_images", "📁 Load Images", () => {
-                    this.openImageLoader();
+                // Add custom batch manager button
+                this.addWidget("button", "batch_manager", "📁 Manage Batch Images", () => {
+                    this.showBatchManager();
                 });
-                
-                // Add "Clear Batch" button
-                this.addWidget("button", "clear_batch", "🗑️ Clear Batch", () => {
-                    this.clearBatch();
-                });
-                
-                // Add info display
-                const infoWidget = this.addWidget("text", "batch_info", "", () => {}, {
-                    multiline: true,
-                    disabled: true
-                });
-                this.infoWidget = infoWidget;
-                this.updateBatchInfo();
                 
                 return r;
             };
             
-            // Method to open file dialog
-            nodeType.prototype.openImageLoader = function() {
-                const input = document.createElement("input");
-                input.type = "file";
-                input.multiple = true;
-                input.accept = "image/*";
+            // Show batch manager dialog
+            nodeType.prototype.showBatchManager = async function() {
+                // Create overlay
+                const overlay = document.createElement("div");
+                overlay.style.cssText = `
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(0,0,0,0.8);
+                    z-index: 10000;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                `;
                 
-                input.onchange = async (e) => {
-                    const files = Array.from(e.target.files);
-                    await this.uploadImages(files);
+                // Create dialog
+                const dialog = document.createElement("div");
+                dialog.style.cssText = `
+                    background: #1e1e1e;
+                    border-radius: 8px;
+                    width: 80%;
+                    max-width: 1200px;
+                    max-height: 90vh;
+                    display: flex;
+                    flex-direction: column;
+                    color: #fff;
+                    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+                `;
+                
+                // Header
+                const header = document.createElement("div");
+                header.style.cssText = `
+                    padding: 20px;
+                    border-bottom: 1px solid #333;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                `;
+                header.innerHTML = `
+                    <h2 style="margin: 0;">🖼️ Batch Image Manager</h2>
+                    <button id="i9_close" style="background: #c44; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold;">
+                        ✕ Close
+                    </button>
+                `;
+                
+                // Toolbar
+                const toolbar = document.createElement("div");
+                toolbar.style.cssText = `
+                    padding: 15px 20px;
+                    background: #252525;
+                    display: flex;
+                    gap: 10px;
+                    align-items: center;
+                    flex-wrap: wrap;
+                `;
+                toolbar.innerHTML = `
+                    <input type="file" id="i9_file_input" multiple accept="image/*" style="display: none;">
+                    <button id="i9_upload_btn" style="background: #4a4; color: #fff; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;">
+                        ⬆️ Upload Images
+                    </button>
+                    <button id="i9_refresh_btn" style="background: #44a; color: #fff; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">
+                        🔄 Refresh
+                    </button>
+                    <button id="i9_clear_btn" style="background: #c44; color: #fff; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">
+                        🗑️ Clear All
+                    </button>
+                    <span id="i9_status" style="margin-left: auto; color: #aaa;"></span>
+                `;
+                
+                // Image grid container
+                const gridContainer = document.createElement("div");
+                gridContainer.style.cssText = `
+                    flex: 1;
+                    overflow-y: auto;
+                    padding: 20px;
+                `;
+                
+                const grid = document.createElement("div");
+                grid.id = "i9_image_grid";
+                grid.style.cssText = `
+                    display: grid;
+                    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+                    gap: 15px;
+                `;
+                gridContainer.appendChild(grid);
+                
+                // Assemble dialog
+                dialog.appendChild(header);
+                dialog.appendChild(toolbar);
+                dialog.appendChild(gridContainer);
+                overlay.appendChild(dialog);
+                document.body.appendChild(overlay);
+                
+                // Event handlers
+                const closeDialog = () => document.body.removeChild(overlay);
+                
+                document.getElementById("i9_close").onclick = closeDialog;
+                overlay.onclick = (e) => {
+                    if (e.target === overlay) closeDialog();
                 };
                 
-                input.click();
-            };
-            
-            // Upload images to ComfyUI
-            nodeType.prototype.uploadImages = async function(files) {
-                const batchData = JSON.parse(this.properties.batch_data || "{}");
-                if (!batchData.images) batchData.images = [];
-                if (!batchData.order) batchData.order = [];
+                // Upload handler
+                const fileInput = document.getElementById("i9_file_input");
+                document.getElementById("i9_upload_btn").onclick = () => fileInput.click();
                 
-                for (const file of files) {
+                fileInput.onchange = async (e) => {
+                    const files = Array.from(e.target.files);
+                    if (files.length === 0) return;
+                    
+                    const status = document.getElementById("i9_status");
+                    status.textContent = `Uploading ${files.length} image(s)...`;
+                    status.style.color = "#4a4";
+                    
+                    const formData = new FormData();
+                    files.forEach(file => {
+                        formData.append('image', file);
+                    });
+                    
                     try {
-                        const formData = new FormData();
-                        formData.append("image", file);
-                        formData.append("subfolder", "I9_ImagePool");
-                        formData.append("type", "input");
-                        
-                        const resp = await api.fetchApi("/upload/image", {
-                            method: "POST",
+                        const response = await fetch('/i9/batch/upload', {
+                            method: 'POST',
                             body: formData
                         });
                         
-                        const result = await resp.json();
+                        const result = await response.json();
                         
-                        // Add to batch data
-                        const imageId = `img_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-                        batchData.images.push({
-                            id: imageId,
-                            filename: result.name,
-                            original_name: file.name,
-                            repeat_count: 1
-                        });
-                        batchData.order.push(imageId);
-                        
-                    } catch (err) {
-                        console.error("Failed to upload image:", file.name, err);
-                        alert(`Failed to upload ${file.name}`);
-                    }
-                }
-                
-                this.properties.batch_data = JSON.stringify(batchData);
-                this.updateBatchInfo();
-            };
-            
-            // Clear batch
-            nodeType.prototype.clearBatch = function() {
-                this.properties.batch_data = JSON.stringify({
-                    images: [],
-                    latents: [],
-                    order: []
-                });
-                this.updateBatchInfo();
-            };
-            
-            // Update info display
-            nodeType.prototype.updateBatchInfo = function() {
-                if (!this.infoWidget) return;
-                
-                const batchData = JSON.parse(this.properties.batch_data || "{}");
-                const imageCount = (batchData.images || []).length;
-                const latentCount = (batchData.latents || []).length;
-                const totalImages = (batchData.images || []).reduce((sum, img) => sum + (img.repeat_count || 1), 0);
-                
-                let info = `📊 Batch Status:\n`;
-                info += `Images: ${imageCount} (${totalImages} total with repeats)\n`;
-                info += `Latents: ${latentCount}\n`;
-                
-                if (imageCount > 0) {
-                    info += `\n📷 Images:\n`;
-                    (batchData.images || []).forEach((img, i) => {
-                        info += `  ${i+1}. ${img.original_name} (×${img.repeat_count})\n`;
-                    });
-                }
-                
-                this.infoWidget.value = info;
-            };
-            
-            // Override getExtraMenuOptions to add batch management
-            const origGetExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
-            nodeType.prototype.getExtraMenuOptions = function(_, options) {
-                if (origGetExtraMenuOptions) {
-                    origGetExtraMenuOptions.apply(this, arguments);
-                }
-                
-                const batchData = JSON.parse(this.properties.batch_data || "{}");
-                
-                options.unshift(
-                    {
-                        content: "Manage Batch Images",
-                        callback: () => {
-                            this.showBatchManager();
+                        if (result.success) {
+                            status.textContent = `✓ Uploaded ${result.files.length} image(s)`;
+                            setTimeout(() => {
+                                status.textContent = '';
+                            }, 3000);
+                            loadImages();
+                        } else {
+                            status.textContent = `✗ Upload failed: ${result.error}`;
+                            status.style.color = "#c44";
                         }
-                    },
-                    null // separator
-                );
-            };
-            
-            // Batch manager dialog
-            nodeType.prototype.showBatchManager = function() {
-                const batchData = JSON.parse(this.properties.batch_data || "{}");
-                const images = batchData.images || [];
+                    } catch (err) {
+                        status.textContent = `✗ Upload error: ${err.message}`;
+                        status.style.color = "#c44";
+                    }
+                    
+                    fileInput.value = '';
+                };
                 
-                const dialog = document.createElement("div");
-                dialog.style.cssText = `
-                    position: fixed;
-                    top: 50%;
-                    left: 50%;
-                    transform: translate(-50%, -50%);
-                    background: #2b2b2b;
-                    padding: 20px;
-                    border-radius: 8px;
-                    z-index: 10000;
-                    min-width: 400px;
-                    max-height: 80vh;
-                    overflow-y: auto;
-                    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-                `;
+                // Refresh handler
+                document.getElementById("i9_refresh_btn").onclick = loadImages;
                 
-                let html = `<h3 style="margin-top:0; color: #fff;">Batch Image Manager</h3>`;
+                // Clear all handler
+                document.getElementById("i9_clear_btn").onclick = async () => {
+                    if (!confirm("Delete ALL images from the batch pool? This cannot be undone.")) return;
+                    
+                    const status = document.getElementById("i9_status");
+                    status.textContent = "Clearing...";
+                    
+                    try {
+                        const response = await fetch('/i9/batch/clear', {
+                            method: 'POST'
+                        });
+                        const result = await response.json();
+                        
+                        if (result.success) {
+                            status.textContent = "✓ Cleared all images";
+                            status.style.color = "#4a4";
+                            setTimeout(() => {
+                                status.textContent = '';
+                            }, 2000);
+                            loadImages();
+                        }
+                    } catch (err) {
+                        status.textContent = `✗ Error: ${err.message}`;
+                        status.style.color = "#c44";
+                    }
+                };
                 
-                if (images.length === 0) {
-                    html += `<p style="color: #aaa;">No images loaded. Click "Load Images" to add.</p>`;
-                } else {
-                    images.forEach((img, idx) => {
-                        html += `
-                            <div style="padding: 10px; margin: 5px 0; background: #1a1a1a; border-radius: 4px; display: flex; justify-content: space-between; align-items: center;">
-                                <div style="color: #fff;">
-                                    <strong>${img.original_name}</strong><br>
-                                    <small style="color: #888;">${img.filename}</small>
-                                    <div style="margin-top: 5px;">
-                                        <label style="color: #aaa;">Repeats: </label>
-                                        <input type="number" id="repeat_${idx}" value="${img.repeat_count || 1}" min="1" max="100" 
-                                            style="width: 60px; background: #333; color: #fff; border: 1px solid #555; padding: 2px;">
+                // Load and display images
+                async function loadImages() {
+                    const grid = document.getElementById("i9_image_grid");
+                    const status = document.getElementById("i9_status");
+                    
+                    grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: #888; padding: 40px;">Loading...</div>';
+                    
+                    try {
+                        const response = await fetch('/i9/batch/list');
+                        const result = await response.json();
+                        
+                        if (!result.success) {
+                            grid.innerHTML = `<div style="grid-column: 1/-1; text-align: center; color: #c44; padding: 40px;">Error: ${result.error}</div>`;
+                            return;
+                        }
+                        
+                        const images = result.images;
+                        
+                        if (images.length === 0) {
+                            grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: #888; padding: 40px;">No images in batch. Click "Upload Images" to add some.</div>';
+                            status.textContent = '0 images';
+                            return;
+                        }
+                        
+                        grid.innerHTML = '';
+                        status.textContent = `${images.length} image(s)`;
+                        
+                        images.forEach(img => {
+                            const card = document.createElement("div");
+                            card.style.cssText = `
+                                background: #2a2a2a;
+                                border-radius: 8px;
+                                overflow: hidden;
+                                cursor: pointer;
+                                transition: transform 0.2s;
+                                position: relative;
+                            `;
+                            
+                            card.onmouseenter = () => {
+                                card.style.transform = "scale(1.05)";
+                            };
+                            card.onmouseleave = () => {
+                                card.style.transform = "scale(1)";
+                            };
+                            
+                            const imgUrl = `/view?filename=${encodeURIComponent(img.filename)}&subfolder=I9_ImagePool&type=input&rand=${Math.random()}`;
+                            
+                            card.innerHTML = `
+                                <div style="position: relative; padding-top: 100%; background: #1a1a1a;">
+                                    <img src="${imgUrl}" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;" />
+                                </div>
+                                <div style="padding: 10px;">
+                                    <div style="font-size: 12px; color: #ccc; margin-bottom: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${img.filename}">
+                                        ${img.filename}
+                                    </div>
+                                    <div style="font-size: 10px; color: #888;">
+                                        ${formatFileSize(img.size)}
                                     </div>
                                 </div>
-                                <button id="remove_${idx}" style="background: #c44; color: #fff; border: none; padding: 8px 12px; cursor: pointer; border-radius: 4px;">
-                                    Remove
+                                <button class="i9_delete_btn" data-filename="${img.filename}" style="position: absolute; top: 8px; right: 8px; background: rgba(204,68,68,0.9); color: #fff; border: none; padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold;">
+                                    ✕
                                 </button>
-                            </div>
-                        `;
-                    });
-                }
-                
-                html += `
-                    <div style="margin-top: 20px; display: flex; gap: 10px;">
-                        <button id="save_btn" style="flex: 1; background: #4a4; color: #fff; border: none; padding: 10px; cursor: pointer; border-radius: 4px;">
-                            Save Changes
-                        </button>
-                        <button id="cancel_btn" style="flex: 1; background: #666; color: #fff; border: none; padding: 10px; cursor: pointer; border-radius: 4px;">
-                            Cancel
-                        </button>
-                    </div>
-                `;
-                
-                dialog.innerHTML = html;
-                document.body.appendChild(dialog);
-                
-                // Event handlers
-                const saveChanges = () => {
-                    images.forEach((img, idx) => {
-                        const repeatInput = document.getElementById(`repeat_${idx}`);
-                        if (repeatInput) {
-                            img.repeat_count = parseInt(repeatInput.value) || 1;
-                        }
-                    });
-                    
-                    batchData.images = images;
-                    this.properties.batch_data = JSON.stringify(batchData);
-                    this.updateBatchInfo();
-                    document.body.removeChild(dialog);
-                };
-                
-                images.forEach((img, idx) => {
-                    const removeBtn = document.getElementById(`remove_${idx}`);
-                    if (removeBtn) {
-                        removeBtn.onclick = () => {
-                            images.splice(idx, 1);
-                            batchData.order = batchData.order.filter(id => id !== img.id);
-                            batchData.images = images;
-                            this.properties.batch_data = JSON.stringify(batchData);
-                            document.body.removeChild(dialog);
-                            this.showBatchManager(); // Reopen to refresh
-                        };
-                    }
-                });
-                
-                document.getElementById("save_btn").onclick = saveChanges;
-                document.getElementById("cancel_btn").onclick = () => {
-                    document.body.removeChild(dialog);
-                };
-            };
-            
-            // Ensure batch_data is synced to the hidden widget
-            const onExecuted = nodeType.prototype.onExecuted;
-            nodeType.prototype.onExecuted = function(message) {
-                if (onExecuted) {
-                    onExecuted.apply(this, arguments);
-                }
-            };
-            
-            // Serialize properties to batch_data widget
-            const onConfigure = nodeType.prototype.onConfigure;
-            nodeType.prototype.onConfigure = function(info) {
-                if (onConfigure) {
-                    onConfigure.apply(this, arguments);
-                }
-                
-                // Sync from properties to widget
-                if (this.properties && this.properties.batch_data) {
-                    const widget = this.widgets.find(w => w.name === "batch_data");
-                    if (widget) {
-                        widget.value = this.properties.batch_data;
+                            `;
+                            
+                            grid.appendChild(card);
+                        });
+                        
+                        // Attach delete handlers
+                        grid.querySelectorAll(".i9_delete_btn").forEach(btn => {
+                            btn.onclick = async (e) => {
+                                e.stopPropagation();
+                                const filename = btn.dataset.filename;
+                                
+                                if (!confirm(`Delete ${filename}?`)) return;
+                                
+                                try {
+                                    const response = await fetch('/i9/batch/delete', {
+                                        method: 'DELETE',
+                                        headers: {'Content-Type': 'application/json'},
+                                        body: JSON.stringify({filename})
+                                    });
+                                    
+                                    const result = await response.json();
+                                    if (result.success) {
+                                        loadImages();
+                                    }
+                                } catch (err) {
+                                    alert(`Error deleting image: ${err.message}`);
+                                }
+                            };
+                        });
+                        
+                    } catch (err) {
+                        grid.innerHTML = `<div style="grid-column: 1/-1; text-align: center; color: #c44; padding: 40px;">Error loading images: ${err.message}</div>`;
                     }
                 }
                 
-                this.updateBatchInfo();
-            };
-            
-            const onSerialize = nodeType.prototype.onSerialize;
-            nodeType.prototype.onSerialize = function(o) {
-                if (onSerialize) {
-                    onSerialize.apply(this, arguments);
+                function formatFileSize(bytes) {
+                    if (bytes < 1024) return bytes + ' B';
+                    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+                    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
                 }
                 
-                // Sync properties to widget before serialization
-                const widget = this.widgets.find(w => w.name === "batch_data");
-                if (widget && this.properties) {
-                    widget.value = this.properties.batch_data || "{}";
-                }
+                // Initial load
+                loadImages();
             };
         }
     }
