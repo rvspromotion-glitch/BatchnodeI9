@@ -1,8 +1,0 @@
-# ComfyUI I9 Batch Processing Dependencies
-# Note: torch and numpy are already included with ComfyUI
-
-# Core image processing
-Pillow>=10.0.0
-
-# That's it! The I9 Batch Processing node only needs Pillow for image handling.
-# All other dependencies (torch, numpy, folder_paths, comfy.utils) come with ComfyUI.
