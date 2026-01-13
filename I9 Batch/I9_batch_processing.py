@@ -7,6 +7,9 @@ import uuid
 import hashlib
 import folder_paths
 import comfy.utils
+import server
+from aiohttp import web
+import shutil
 
 class I9_BatchProcessing:
 
@@ -26,6 +29,7 @@ class I9_BatchProcessing:
                 "height": ("INT", {"default": 512, "min": 64, "max": 8192, "step": 8}),
                 "aspect_label": ("STRING", {"default": "1:1"}),
                 "enable_img2img": ("BOOLEAN", {"default": True}),
+                "upload": ("IMAGEUPLOAD", {"default": ""}),  # Image upload widget
             },
             "hidden": {
                 "node_id": "UNIQUE_ID",
@@ -38,7 +42,7 @@ class I9_BatchProcessing:
     FUNCTION = "load_batch"
     CATEGORY = "I9/Input"
 
-    def load_batch(self, mode="Batch Tensor", resize_mode="Center Crop", batch_index=0, width=512, height=512, aspect_label="1:1", enable_img2img=True, node_id=None, batch_data="{}"):
+    def load_batch(self, mode="Batch Tensor", resize_mode="Center Crop", batch_index=0, width=512, height=512, aspect_label="1:1", enable_img2img=True, upload="", node_id=None, batch_data="{}"):
         print(f"\n{'='*60}")
         print(f"[I9 Batch Processing] Mode: {mode} | Resize: {resize_mode} | Index: {batch_index}")
         print(f"[I9 Batch Processing] Enable img2img: {enable_img2img} | Resolution: {width}x{height} | Aspect: {aspect_label}")
@@ -49,6 +53,10 @@ class I9_BatchProcessing:
         except json.JSONDecodeError:
             print("[I9 Batch Processing] Invalid batch_data JSON, using empty.")
             data = {}
+
+        # Process uploaded image if present
+        if upload and upload != "":
+            data = self._handle_upload(upload, data, node_id)
 
         # txt2img mode: Generate empty latents
         if not enable_img2img:
@@ -61,7 +69,7 @@ class I9_BatchProcessing:
         if not images_meta or not order:
             print("[I9 Batch Processing] No images in batch, returning empty.")
             empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
-            return (empty, 0, 0, "No images loaded")
+            return (empty, 0, 0, "No images loaded. Use the upload button.")
 
         upload_dir = self._get_upload_dir(node_id)
         if not os.path.exists(upload_dir):
@@ -87,6 +95,28 @@ class I9_BatchProcessing:
             return (img_tensor, current_index, total, info)
         else:
             return self._load_batch_tensor(upload_dir, images_meta, order, resize_mode, total_count, width, height, node_id)
+
+    def _handle_upload(self, upload, data, node_id):
+        """Process uploaded image and add to batch data"""
+        if not data:
+            data = {'images': [], 'latents': [], 'order': []}
+        if 'images' not in data:
+            data['images'] = []
+        if 'order' not in data:
+            data['order'] = []
+
+        # Upload is the image filename that was uploaded
+        image_id = f"img_{uuid.uuid4().hex[:16]}"
+        data['images'].append({
+            'id': image_id,
+            'filename': upload,
+            'original_name': upload,
+            'repeat_count': 1
+        })
+        data['order'].append(image_id)
+        
+        print(f"[I9 Batch Processing] Added image to batch: {upload}")
+        return data
 
     def _load_sequential(self, upload_dir, images_meta, order, batch_index, total_count, node_id=None):
         flat_list = []
@@ -292,7 +322,6 @@ class I9_BatchProcessing:
 
         Auto-migrates images to pool when found in old locations.
         """
-        import shutil
         input_dir = folder_paths.get_input_directory()
         pool_dir = os.path.join(input_dir, "I9_ImagePool")
         os.makedirs(pool_dir, exist_ok=True)
@@ -335,12 +364,31 @@ class I9_BatchProcessing:
         return None
 
     @classmethod
-    def IS_CHANGED(cls, mode="Batch Tensor", batch_data="{}", **kwargs):
+    def IS_CHANGED(cls, mode="Batch Tensor", batch_data="{}", upload="", **kwargs):
+        # Force re-execution when upload changes
+        if upload and upload != "":
+            import time
+            return f"upload_{time.time()}_{upload}"
+        
         if mode == "Sequential":
             import time
             return f"seq_{time.time()}_{hashlib.md5(batch_data.encode()).hexdigest()[:8]}"
         else:
             return hashlib.md5(batch_data.encode()).hexdigest()
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, upload="", **kwargs):
+        # Validate upload if provided
+        if upload and upload != "":
+            input_dir = folder_paths.get_input_directory()
+            pool_dir = os.path.join(input_dir, "I9_ImagePool")
+            img_path = os.path.join(pool_dir, upload)
+            if not os.path.exists(img_path):
+                # Also check in root input directory
+                img_path = os.path.join(input_dir, upload)
+                if not os.path.exists(img_path):
+                    return f"Image not found: {upload}"
+        return True
 
 NODE_CLASS_MAPPINGS = {"I9_BatchProcessing": I9_BatchProcessing}
 NODE_DISPLAY_NAME_MAPPINGS = {"I9_BatchProcessing": "🖼️ I9 Batch Processing"}
