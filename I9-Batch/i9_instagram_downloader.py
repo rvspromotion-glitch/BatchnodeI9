@@ -10,14 +10,30 @@ import server
 from aiohttp import web
 import shutil
 from datetime import datetime
-import instaloader
 import tempfile
+
+# Try to import instaloader - will be None if not installed
+try:
+    import instaloader
+    INSTALOADER_AVAILABLE = True
+except ImportError:
+    instaloader = None
+    INSTALOADER_AVAILABLE = False
+    print("Warning: instaloader not installed. Instagram Downloader node will have limited functionality.")
+    print("Install with: pip install instaloader>=4.10.0")
 
 # API Routes for Instagram downloader
 @server.PromptServer.instance.routes.post("/i9/instagram/download")
 async def download_instagram_profile(request):
     """Download images from Instagram profile"""
     try:
+        # Check if instaloader is available
+        if not INSTALOADER_AVAILABLE:
+            return web.json_response({
+                'success': False,
+                'error': 'instaloader not installed. Run: pip install instaloader>=4.10.0'
+            }, status=500)
+
         data = await request.json()
         profile_url = data.get('profile_url', '')
         download_mode = data.get('download_mode', 'all')

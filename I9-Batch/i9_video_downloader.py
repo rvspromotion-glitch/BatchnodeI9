@@ -11,14 +11,45 @@ from aiohttp import web
 import shutil
 import tempfile
 import subprocess
-import cv2
-import yt_dlp
+
+# Try to import cv2 - will be None if not installed
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    cv2 = None
+    CV2_AVAILABLE = False
+    print("Warning: opencv-python not installed. Video Downloader node will have limited functionality.")
+    print("Install with: pip install opencv-python>=4.8.0")
+
+# Try to import yt_dlp - will be None if not installed
+try:
+    import yt_dlp
+    YT_DLP_AVAILABLE = True
+except ImportError:
+    yt_dlp = None
+    YT_DLP_AVAILABLE = False
+    print("Warning: yt-dlp not installed. Video Downloader node will have limited functionality.")
+    print("Install with: pip install yt-dlp>=2023.10.0")
 
 # API Routes for video downloader
 @server.PromptServer.instance.routes.post("/i9/videodownload/fetch")
 async def download_single_video(request):
     """Download a single video from Instagram Reels or TikTok"""
     try:
+        # Check if required dependencies are available
+        if not YT_DLP_AVAILABLE:
+            return web.json_response({
+                'success': False,
+                'error': 'yt-dlp not installed. Run: pip install yt-dlp>=2023.10.0'
+            }, status=500)
+
+        if not CV2_AVAILABLE:
+            return web.json_response({
+                'success': False,
+                'error': 'opencv-python not installed. Run: pip install opencv-python>=4.8.0'
+            }, status=500)
+
         data = await request.json()
         video_url = data.get('video_url', '')
         download_type = data.get('download_type', 'video')
