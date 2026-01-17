@@ -90,6 +90,15 @@ async def download_single_video(request):
                 'no_warnings': False,
             }
 
+            # Check for cookies file (for age-restricted or login-required content)
+            cookies_file = os.path.join(input_dir, "cookies.txt")
+            if os.path.exists(cookies_file):
+                ydl_opts['cookiefile'] = cookies_file
+                print(f"[yt-dlp] Using cookies from {cookies_file}")
+            else:
+                print(f"[yt-dlp] No cookies.txt found at {cookies_file}")
+                print("[yt-dlp] Note: Instagram and age-restricted content may require cookies")
+
             # Download video
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=True)
@@ -178,9 +187,27 @@ async def download_single_video(request):
         except Exception as e:
             # Cleanup on error
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+            error_msg = str(e)
+
+            # Check if error is related to authentication/cookies
+            if 'login required' in error_msg.lower() or 'cookies' in error_msg.lower() or 'rate-limit' in error_msg.lower():
+                return web.json_response({
+                    'success': False,
+                    'error': f'Authentication required. Please provide cookies:\n\n'
+                            f'1. Install browser extension "Get cookies.txt LOCALLY"\n'
+                            f'   Chrome: https://chrome.google.com/webstore (search for it)\n'
+                            f'   Firefox: https://addons.mozilla.org (search for it)\n\n'
+                            f'2. Login to Instagram/TikTok in your browser\n'
+                            f'3. Click the extension icon and export cookies.txt\n'
+                            f'4. Save cookies.txt to: {input_dir}/cookies.txt\n\n'
+                            f'For age-restricted content: Use account with 18+ birthdate\n\n'
+                            f'Original error: {error_msg}'
+                }, status=401)
+
             return web.json_response({
                 'success': False,
-                'error': f'Download failed: {str(e)}'
+                'error': f'Download failed: {error_msg}'
             }, status=500)
 
     except Exception as e:
