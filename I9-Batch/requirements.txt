@@ -4,5 +4,11 @@
 # Core image processing
 Pillow>=10.0.0
 
-# That's it! The I9 Batch Processing node only needs Pillow for image handling.
+# Video processing for I9 Batch Video Extractor
+opencv-python>=4.8.0
+
+# Social media downloaders for I9 Instagram/TikTok nodes
+instaloader>=4.10.0
+yt-dlp>=2023.10.0
+
 # All other dependencies (torch, numpy, folder_paths, comfy.utils) come with ComfyUI.
