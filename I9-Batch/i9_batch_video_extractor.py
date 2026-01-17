@@ -10,7 +10,16 @@ import comfy.utils
 import server
 from aiohttp import web
 import shutil
-import cv2
+
+# Try to import cv2 - will be None if not installed
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    cv2 = None
+    CV2_AVAILABLE = False
+    print("Warning: opencv-python not installed. Batch Video Extractor node will have limited functionality.")
+    print("Install with: pip install opencv-python>=4.8.0")
 
 # API Routes for video batch management
 @server.PromptServer.instance.routes.post("/i9/video/upload")
@@ -168,6 +177,11 @@ class I9_BatchVideoExtractor:
         print(f"[I9 Video Extractor] Mode: {mode} | Frame: {frame_number} | Resize: {resize_mode}")
         print(f"[I9 Video Extractor] Resolution: {width}x{height} | Batch Index: {batch_index}")
         print(f"[I9 Video Extractor] Processing videos for node: {node_id}")
+
+        # Check if cv2 is available
+        if not CV2_AVAILABLE:
+            empty = torch.zeros((1, 64, 64, 3), dtype=torch.float32)
+            return (empty, 0, 0, "opencv-python not installed. Run: pip install opencv-python>=4.8.0")
 
         # Get all videos from pool
         input_dir = folder_paths.get_input_directory()
