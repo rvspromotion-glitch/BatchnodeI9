@@ -72,8 +72,30 @@ async def download_instagram_profile(request):
                 compress_json=False,
                 post_metadata_txt_pattern='',
                 dirname_pattern=temp_dir,
-                filename_pattern='{shortcode}'
+                filename_pattern='{shortcode}',
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             )
+
+            # Try to load session from ComfyUI input directory
+            session_file = os.path.join(input_dir, "instagram_session")
+            if os.path.exists(session_file):
+                try:
+                    L.load_session_from_file(username=None, filename=session_file)
+                    print(f"[Instagram] Loaded saved session from {session_file}")
+                except Exception as e:
+                    print(f"[Instagram] Could not load session: {e}")
+            else:
+                # Return error with instructions
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return web.json_response({
+                    'success': False,
+                    'error': f'Instagram requires login. Please create a session file:\n\n'
+                            f'1. Install instaloader: pip install instaloader\n'
+                            f'2. Run in terminal: instaloader --login YOUR_USERNAME\n'
+                            f'3. Copy session file to: {input_dir}/instagram_session\n\n'
+                            f'Session file should be named: instagram_session (no extension)\n\n'
+                            f'Alternatively, you can download Instagram posts manually and use the regular batch processing node.'
+                }, status=401)
 
             # Load profile
             profile = instaloader.Profile.from_username(L.context, username)
