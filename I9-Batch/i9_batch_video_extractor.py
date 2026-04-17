@@ -5,6 +5,8 @@ import os
 import json
 import uuid
 import hashlib
+import zipfile
+import io
 import folder_paths
 import comfy.utils
 import server
@@ -140,6 +142,66 @@ async def clear_video_pool(request):
                     os.remove(filepath)
 
         return web.json_response({'success': True})
+    except Exception as e:
+        return web.json_response({'success': False, 'error': str(e)}, status=500)
+
+@server.PromptServer.instance.routes.post("/i9/video/upload_zip")
+async def upload_zip_videos(request):
+    """Handle ZIP archive upload containing videos"""
+    VIDEO_EXTS = ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v')
+    try:
+        reader = await request.multipart()
+        uploaded_files = []
+
+        input_dir = folder_paths.get_input_directory()
+        pool_dir = os.path.join(input_dir, "I9_VideoPool")
+        os.makedirs(pool_dir, exist_ok=True)
+
+        field = await reader.next()
+        while field is not None:
+            if field.name == 'zip':
+                zip_data = bytearray()
+                while True:
+                    chunk = await field.read_chunk()
+                    if not chunk:
+                        break
+                    zip_data.extend(chunk)
+
+                with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+                    for entry in zf.infolist():
+                        if entry.is_dir():
+                            continue
+                        filename = os.path.basename(entry.filename)
+                        if not filename or filename.startswith('.'):
+                            continue
+                        if not filename.lower().endswith(VIDEO_EXTS):
+                            continue
+
+                        base, ext = os.path.splitext(filename)
+                        counter = 1
+                        final_filename = filename
+                        while os.path.exists(os.path.join(pool_dir, final_filename)):
+                            final_filename = f"{base}_{counter}{ext}"
+                            counter += 1
+
+                        filepath = os.path.join(pool_dir, final_filename)
+                        with open(filepath, 'wb') as f:
+                            f.write(zf.read(entry.filename))
+
+                        uploaded_files.append({
+                            'filename': final_filename,
+                            'original_name': filename,
+                            'path': filepath
+                        })
+
+            field = await reader.next()
+
+        return web.json_response({
+            'success': True,
+            'files': uploaded_files
+        })
+    except zipfile.BadZipFile:
+        return web.json_response({'success': False, 'error': 'Invalid or corrupted ZIP file'}, status=400)
     except Exception as e:
         return web.json_response({'success': False, 'error': str(e)}, status=500)
 

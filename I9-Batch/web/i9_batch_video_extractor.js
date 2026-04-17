@@ -79,8 +79,12 @@ app.registerExtension({
                 `;
                 toolbar.innerHTML = `
                     <input type="file" id="i9_video_file_input" multiple accept="video/*" style="display: none;">
+                    <input type="file" id="i9_video_zip_input" accept=".zip" style="display: none;">
                     <button id="i9_video_upload_btn" style="background: #4a4; color: #fff; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;">
                         ⬆️ Upload Videos
+                    </button>
+                    <button id="i9_video_upload_zip_btn" style="background: #a74; color: #fff; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;">
+                        🗜️ Upload ZIP
                     </button>
                     <button id="i9_video_refresh_btn" style="background: #44a; color: #fff; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">
                         🔄 Refresh
@@ -164,6 +168,48 @@ app.registerExtension({
                     }
 
                     fileInput.value = '';
+                };
+
+                // ZIP upload handler
+                const zipInput = document.getElementById("i9_video_zip_input");
+                document.getElementById("i9_video_upload_zip_btn").onclick = () => zipInput.click();
+
+                zipInput.onchange = async (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+
+                    const status = document.getElementById("i9_video_status");
+                    status.textContent = `Extracting ${file.name}...`;
+                    status.style.color = "#a74";
+
+                    const formData = new FormData();
+                    formData.append('zip', file);
+
+                    try {
+                        const response = await fetch('/i9/video/upload_zip', {
+                            method: 'POST',
+                            body: formData
+                        });
+
+                        const result = await response.json();
+
+                        if (result.success) {
+                            status.textContent = `✓ Extracted ${result.files.length} video(s) from ZIP`;
+                            status.style.color = "#4a4";
+                            setTimeout(() => {
+                                status.textContent = '';
+                            }, 3000);
+                            loadVideos();
+                        } else {
+                            status.textContent = `✗ ZIP upload failed: ${result.error}`;
+                            status.style.color = "#c44";
+                        }
+                    } catch (err) {
+                        status.textContent = `✗ ZIP upload error: ${err.message}`;
+                        status.style.color = "#c44";
+                    }
+
+                    zipInput.value = '';
                 };
 
                 // Refresh handler
