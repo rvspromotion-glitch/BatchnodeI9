@@ -79,8 +79,12 @@ app.registerExtension({
                 `;
                 toolbar.innerHTML = `
                     <input type="file" id="i9_file_input" multiple accept="image/*" style="display: none;">
+                    <input type="file" id="i9_zip_input" accept=".zip" style="display: none;">
                     <button id="i9_upload_btn" style="background: #4a4; color: #fff; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;">
                         ⬆️ Upload Images
+                    </button>
+                    <button id="i9_upload_zip_btn" style="background: #a74; color: #fff; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;">
+                        🗜️ Upload ZIP
                     </button>
                     <button id="i9_refresh_btn" style="background: #44a; color: #fff; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">
                         🔄 Refresh
@@ -126,28 +130,28 @@ app.registerExtension({
                 // Upload handler
                 const fileInput = document.getElementById("i9_file_input");
                 document.getElementById("i9_upload_btn").onclick = () => fileInput.click();
-                
+
                 fileInput.onchange = async (e) => {
                     const files = Array.from(e.target.files);
                     if (files.length === 0) return;
-                    
+
                     const status = document.getElementById("i9_status");
                     status.textContent = `Uploading ${files.length} image(s)...`;
                     status.style.color = "#4a4";
-                    
+
                     const formData = new FormData();
                     files.forEach(file => {
                         formData.append('image', file);
                     });
-                    
+
                     try {
                         const response = await fetch('/i9/batch/upload', {
                             method: 'POST',
                             body: formData
                         });
-                        
+
                         const result = await response.json();
-                        
+
                         if (result.success) {
                             status.textContent = `✓ Uploaded ${result.files.length} image(s)`;
                             setTimeout(() => {
@@ -162,10 +166,52 @@ app.registerExtension({
                         status.textContent = `✗ Upload error: ${err.message}`;
                         status.style.color = "#c44";
                     }
-                    
+
                     fileInput.value = '';
                 };
-                
+
+                // ZIP upload handler
+                const zipInput = document.getElementById("i9_zip_input");
+                document.getElementById("i9_upload_zip_btn").onclick = () => zipInput.click();
+
+                zipInput.onchange = async (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+
+                    const status = document.getElementById("i9_status");
+                    status.textContent = `Extracting ${file.name}...`;
+                    status.style.color = "#a74";
+
+                    const formData = new FormData();
+                    formData.append('zip', file);
+
+                    try {
+                        const response = await fetch('/i9/batch/upload_zip', {
+                            method: 'POST',
+                            body: formData
+                        });
+
+                        const result = await response.json();
+
+                        if (result.success) {
+                            status.textContent = `✓ Extracted ${result.files.length} image(s) from ZIP`;
+                            status.style.color = "#4a4";
+                            setTimeout(() => {
+                                status.textContent = '';
+                            }, 3000);
+                            loadImages();
+                        } else {
+                            status.textContent = `✗ ZIP upload failed: ${result.error}`;
+                            status.style.color = "#c44";
+                        }
+                    } catch (err) {
+                        status.textContent = `✗ ZIP upload error: ${err.message}`;
+                        status.style.color = "#c44";
+                    }
+
+                    zipInput.value = '';
+                };
+
                 // Refresh handler
                 document.getElementById("i9_refresh_btn").onclick = loadImages;
                 
